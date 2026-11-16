@@ -1,3 +1,6 @@
+> **Fork para la ROG Ally.** Este repositorio es Hookshot con parches para la ROG Ally: lee [LEEME-ALLY.md](LEEME-ALLY.md).
+> Lo de abajo es el readme original de Hookshot.
+
 <h1 align="center">
   <br>
   <a>

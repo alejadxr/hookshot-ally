@@ -1,0 +1,21 @@
+# hookshot_env.txt para la ROG Ally (Z1 Extreme, 16 GB, Windows 11).
+# Va en la carpeta del juego, junto a image.bin. Una variable por línea; las líneas que empiezan por # no cuentan.
+# Es el que se usa a diario en la Ally. Explicación de cada línea: ally/longshot_env.txt de longshot-ally.
+
+RX_VK_PRECOMPILE=0
+RX_VK_PCACHE_LOAD=0
+RX_VK_KEEP_RETIRED=0
+RX_VK_IMPORT_HIGH=85
+RX_VK_VRAM_MB=2560
+RX_VK_PASS_BARRIER=game
+RX_VK_MESH_OPT=1
+RX_VK_NO_READBACK_WAIT=1
+RX_VK_MESH_NOCULL=2c56dc1006942f74
+
+# Parches de este fork (en Hookshot también se puede elegir el número de hilos de trabajo).
+RX_VK_JOB_WORKERS=6
+RX_VK_JOB_PRIO=normal
+RX_VK_PREPARE_WORKERS=auto
+RX_VK_PREPARE_PRIO=high
+
+# No uses RX_VK_DRIVER_FAULTS=3: en la Ally dio DEVICE_LOST al cargar la partida.
