@@ -1,6 +1,10 @@
-# hookshot_env.txt para la ROG Ally (Z1 Extreme, 16 GB, Windows 11).
-# Va en la carpeta del juego, junto a image.bin. Una variable por línea; las líneas que empiezan por # no cuentan.
-# Es el que se usa a diario en la Ally. Explicación de cada línea: ally/longshot_env.txt de longshot-ally.
+# hookshot_env.txt - ROG Ally (Z1 Extreme, 16 GB, Windows 11)
+# EN: Goes in the game folder, next to image.bin. What each line does: GUIDE.md, section 6.
+#     One NAME=VALUE per line; lines starting with # are ignored. No comments at the end of a line.
+#     Don't add RX_VK_DRIVER_FAULTS=3: it gave DEVICE_LOST on the Ally.
+# ES: Va en la carpeta del juego, junto a image.bin. Qué hace cada línea: GUIA.md, apartado 6.
+#     Un NOMBRE=VALOR por línea; las líneas con # al principio no cuentan. Sin comentarios al final de una línea.
+#     No añadas RX_VK_DRIVER_FAULTS=3: en la Ally dio DEVICE_LOST.
 
 RX_VK_PRECOMPILE=0
 RX_VK_PCACHE_LOAD=0
@@ -11,11 +15,7 @@ RX_VK_PASS_BARRIER=game
 RX_VK_MESH_OPT=1
 RX_VK_NO_READBACK_WAIT=1
 RX_VK_MESH_NOCULL=2c56dc1006942f74
-
-# Parches de este fork (en Hookshot también se puede elegir el número de hilos de trabajo).
 RX_VK_JOB_WORKERS=6
 RX_VK_JOB_PRIO=normal
 RX_VK_PREPARE_WORKERS=auto
 RX_VK_PREPARE_PRIO=high
-
-# No uses RX_VK_DRIVER_FAULTS=3: en la Ally dio DEVICE_LOST al cargar la partida.
