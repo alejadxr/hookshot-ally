@@ -1046,10 +1046,12 @@ bool depth_aspect(VkFormat f) {
 // (hookshot) The programs the driver faulted on (driver_faults.h): not asked of it again in this run, nor in later runs on the
 // same driver (hookshot_driver_faults.txt beside the executable). One program's builds go to the driver one at a time on AMD,
 // where a build behind a faulted one hung (issue 996); other drivers keep building a program's variants in parallel.
-// RX_VK_DRIVER_FAULTS=0: off; =1: the default; =2: one at a time on every driver
+// RX_VK_DRIVER_FAULTS=0: off; =1: the default; =2: one at a time on every driver; =3 (fork): the quarantine alone, a
+// program's variants built in parallel on AMD too (an area's first visit queued hundreds of one program's variants one at a
+// time, the workers waiting at the gate; the driver here, 32.0.32015, never faulted)
 constexpr VkResult kDriverFault = (VkResult)-77;   // (what the guards below answer for a fault in the driver)
 int driver_faults_mode() {
-    static const int mode = getenv("RX_VK_DRIVER_FAULTS") ? std::clamp(atoi(getenv("RX_VK_DRIVER_FAULTS")), 0, 2) : 1;
+    static const int mode = getenv("RX_VK_DRIVER_FAULTS") ? std::clamp(atoi(getenv("RX_VK_DRIVER_FAULTS")), 0, 3) : 1;
     return mode;
 }
 bool driver_faults_on() { return driver_faults_mode() != 0; }
@@ -1072,7 +1074,8 @@ driver_faults::Quarantine& fault_quarantine() {
         }
         const auto keys = driver_faults::parse(text, dev.props.vendorID, dev.props.driverVersion);
         q.load(keys);
-        q.set_serial(driver_faults_mode() == 2 || dev.props.vendorID == 0x1002);
+        q.set_serial(driver_faults_mode() == 2 || (dev.props.vendorID == 0x1002 && driver_faults_mode() != 3));
+        if (driver_faults_mode() == 3) logf("vk: (fork) RX_VK_DRIVER_FAULTS=3: faulted programs kept out, a program's builds in parallel");
         if (!keys.empty())
             logf("vk: %zu programs the driver faulted on in earlier runs are not asked of it (%s; RX_VK_DRIVER_FAULTS=0: they are)",
                  keys.size(), driver_faults_path().c_str());
@@ -2221,7 +2224,16 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
     // probe does not wait: another build of its program under way is, for it, a compile that is required
     const bool gated = driver_faults_on();
     if (gated) {
+        const auto tg = std::chrono::steady_clock::now();
         const auto gate = fault_quarantine().begin(p.key, !cold);
+        {   // (fork) the time builds wait at the gate behind another build of their program, told every 500 builds that waited
+            static std::atomic<int64_t> gate_us{0}, gate_n{0}, waited{0};
+            const int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - tg).count();
+            gate_us += us, gate_n++;
+            if (us > 1000 && ++waited % 500 == 0)
+                logf("vk: (fork) pipeline builds at the gate: %lld, %lld of them waited over 1 ms, %.0f ms waited in all",
+                     (long long)gate_n.load(), (long long)waited.load(), gate_us.load() / 1000.0);
+        }
         if (gate == driver_faults::Quarantine::kBusy) return *cold = true, VK_NULL_HANDLE;
         if (gate == driver_faults::Quarantine::kFaulted) {
             static std::atomic<int> told{0};
@@ -5931,7 +5943,11 @@ bool fallback_compute_pipelines(Program& p) {
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = si;
         ci.layout = p.layout;
-        if (dev.task_mesh_fallback || env_on("RX_VK_NOOPT"))
+        // (ally-fork) the task + mesh fallback built its compute stages without the driver's optimizer on every card: on a Radeon
+        // 780M (ROG Ally, AMD's Windows driver) the whole world's geometry then ran unoptimized, ~21 ms of GPU a frame at the
+        // handheld profile. Optimized by default here; RX_VK_FALLBACK_NOOPT=1 (or RX_VK_NOOPT): without it, as upstream
+        static const bool fallback_noopt = env_on("RX_VK_FALLBACK_NOOPT");
+        if ((dev.task_mesh_fallback && fallback_noopt) || env_on("RX_VK_NOOPT"))
             ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         if (const VkResult r = cached_compute(&ci, &made[i]); r != VK_SUCCESS) {
             {
@@ -7743,6 +7759,27 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
     }
     return true;
 }
+// (ally-fork) the start-up preparation's workers and their priority. RX_VK_PREPARE_PRIO=high|above|normal|below (default
+// below, as upstream: on every CPU at High the driver's compiles froze the whole PC; with RX_VK_PREPARE_SPARE CPUs left free
+// the desktop and the driver keep two)
+static int prepare_priority() {
+    const char* e = getenv("RX_VK_PREPARE_PRIO");
+    if (!e) return THREAD_PRIORITY_BELOW_NORMAL;
+    if (!strcmp(e, "high")) return THREAD_PRIORITY_HIGHEST;
+    if (!strcmp(e, "above")) return THREAD_PRIORITY_ABOVE_NORMAL;
+    if (!strcmp(e, "normal")) return THREAD_PRIORITY_NORMAL;
+    return THREAD_PRIORITY_BELOW_NORMAL;
+}
+static unsigned prepare_workers() {
+    const char* e = getenv("RX_VK_PREPARE_WORKERS");
+    if (!e) return std::clamp(half_cpus(), 1u, 32u);
+    const unsigned all = std::max(1u, std::thread::hardware_concurrency());
+    if (!strcmp(e, "auto")) {
+        const unsigned spare = getenv("RX_VK_PREPARE_SPARE") ? (unsigned)std::max(0, atoi(getenv("RX_VK_PREPARE_SPARE"))) : 2u;
+        return std::clamp(all > spare ? all - spare : 1u, 1u, 64u);
+    }
+    return std::clamp((unsigned)std::max(1, atoi(e)), 1u, 64u);
+}
 /// Every shader of the game, before its first start (vk_shader.cpp, the seed): translated once for this translator, and the
 /// driver's part made once for this driver (see PreparedFor). True: prepared now, either of them.
 /// background: in play, behind the game: a few workers at idle priority, translation only (the driver's part is left to first use:
@@ -7853,7 +7890,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     const auto worker = [&] {
         ub_thread_off();   // (a background thread: see ub_thread_off)
         // (below normal, and half the CPUs, below: on all of them at High the driver's compiles froze the whole PC)
-        SetThreadPriority(GetCurrentThread(), background ? THREAD_PRIORITY_IDLE : THREAD_PRIORITY_BELOW_NORMAL);
+        SetThreadPriority(GetCurrentThread(), background ? THREAD_PRIORITY_IDLE : prepare_priority());
         for (;;) {
             if (prepare_stopped()) return;
             const size_t i = next++;
@@ -7892,7 +7929,9 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     const unsigned cpus = usable_cpus();
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     const unsigned quarter = std::clamp(std::max(1u, std::thread::hardware_concurrency()) / 4, 2u, 4u);
-    const unsigned workers = background ? std::min(quarter, cpus) : std::clamp(half_cpus(), 1u, 32u);
+    // (ally-fork) RX_VK_PREPARE_WORKERS=<n> or "auto" (every CPU but RX_VK_PREPARE_SPARE, default 2): the start-up preparation on
+    // more than half the CPUs; on a ROG Ally (8 cores, 16 threads) half of them sat idle through a 20-45 minute first start
+    const unsigned workers = background ? std::min(quarter, cpus) : prepare_workers();
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
@@ -8992,7 +9031,9 @@ void pipeline_cache_save(bool force) {
             // (pipeline_cache_close saves the generation only); a forced save does: Restart now, the prepare. RX_VK_PLAY_SAVE_START_MB=<n>: the growth it is written at in play (64; 0: any, as before))
             static const size_t play_grown = (size_t)(getenv("RX_VK_PLAY_SAVE_START_MB") ? std::max<long long>(0, atoll(getenv("RX_VK_PLAY_SAVE_START_MB"))) : 64) << 20;
             bool write = vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n && n != pcache_saved_size;
-            if (write && !force && play_grown && play_cache_in_use() && n < pcache_saved_size + play_grown) {
+            // (fork) the threshold in play whether or not play generations are in use: with RX_VK_PRECOMPILE=0 there were none
+            // and the whole 950 MB went out at each save for a few KB more, 15 times in a session, a 950 MB buffer each time)
+            if (write && !force && play_grown && n < pcache_saved_size + play_grown) {
                 write = false;
                 static std::atomic<int> told{0};
                 if (told++ < 4)
